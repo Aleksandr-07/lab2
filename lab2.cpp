@@ -6,44 +6,23 @@
 #include <random>
 #include <chrono>
 #include <atomic>
-#include <algorithm>
 
-std::counting_semaphore<10> cranes(5); // Максимум 10 кранов, изначально 5
+std::counting_semaphore<10> cranes(5); 
 std::queue<int> truck_queue;
 std::mutex queue_mutex;
 std::mutex cout_mutex;
 std::atomic<int> loaded_trucks(0);
 std::atomic<bool> emergency_mode(false);
-std::atomic<int> available_cranes(5); // Отслеживаем количество доступных кранов
-std::atomic<bool> crane_added(false); // Флаг, что кран уже добавлен
 
 void truck(int id) {
-    {
-        std::lock_guard<std::mutex> lock(cout_mutex);
-        std::cout << "Грузовик " << id << " прибыл в порт и ожидает загрузки.\n";
-    }
-
-    cranes.acquire();
-    available_cranes--; // Уменьшаем количество доступных кранов
-
-    {
-        std::lock_guard<std::mutex> lock(queue_mutex);
-        // Удаляем грузовик из очереди, когда он начинает загрузку
-        std::queue<int> temp_queue;
-        while (!truck_queue.empty()) {
-            if (truck_queue.front() != id) {
-                temp_queue.push(truck_queue.front());
-            }
-            truck_queue.pop();
-        }
-        truck_queue = temp_queue; // Заменяем очередь
-    }
+    cranes.acquire(); 
 
     {
         std::lock_guard<std::mutex> lock(cout_mutex);
         std::cout << "Грузовик " << id << " начал загрузку.\n";
     }
 
+    
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> time_dist(3, 6);
@@ -56,9 +35,8 @@ void truck(int id) {
         std::cout << "Грузовик " << id << " завершил загрузку за " << load_time << " сек.\n";
     }
 
-    loaded_trucks++;
-    cranes.release();
-    available_cranes++; // Увеличиваем количество доступных кранов
+    loaded_trucks++; 
+    cranes.release(); 
 }
 
 void monitor() {
@@ -67,42 +45,23 @@ void monitor() {
 
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-
-            // Активируем резервный кран, если в очереди больше 5 и есть доступные и ещё не добавлен
-            if (truck_queue.size() > 5 && available_cranes < 10 && !crane_added) {
-                try {
-                    //if (cranes.try_acquire_for(std::chrono::milliseconds(1))) {
-                    //     cranes.release();  //вернули
-                    //} else {
-                    //    continue; //не получилось добавить
-                    //}
-                    cranes.release();  //добавили
-                    available_cranes++; //Увеличили
-                    crane_added = true; // Ставим флаг
-
-                    std::lock_guard<std::mutex> lock_cout(cout_mutex);
-                    std::cout << "Активирован резервный кран! Доступно: " << available_cranes.load() << " кранов.\n";
-                } catch (const std::system_error& e) {
-                    // Обработка ошибки, если не удалось добавить кран (например, достигнут максимум)
-                    std::lock_guard<std::mutex> lock_cout(cout_mutex);
-                    std::cerr << "Ошибка добавления крана: " << e.what() << std::endl;
-                }
-            }
-
-            // Сбрасываем флаг, если очередь уменьшилась
-            if (truck_queue.size() <= 5) {
-                crane_added = false;
+            if (truck_queue.size() > 5 && cranes.try_acquire()) {
+                cranes.release(); 
+                cranes.release(); 
+                std::lock_guard<std::mutex> lock_cout(cout_mutex);
+                std::cout << "Активирован резервный кран! Доступно: " << 10 - cranes.try_acquire() << "\n";
+                cranes.release();
             }
         }
 
         if (loaded_trucks.load() < 3 && !emergency_mode) {
             emergency_mode = true;
             std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "Аварийная загрузка активирована!\n";
+            std::cout << "Аварийная загрузка активирована! (Загружено: " << loaded_trucks << ")\n";
         } else if (loaded_trucks.load() >= 3 && emergency_mode) {
             emergency_mode = false;
             std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "Аварийная загрузка отключена\n";
+            std::cout << "Аварийная загрузка отключена (Загружено: " << loaded_trucks << ")\n";
         }
     }
 }
